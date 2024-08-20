@@ -1,0 +1,25 @@
+.title {
+  font-size: 80px !important;
+  color: black !important;
+}
+
+.quarto-title-author-name {
+  font-size: 30px;
+  color: black !important;
+}
+
+.date {
+  font-size: 30px;
+  color: black;
+}
+
+.stacked-image {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.reveal .center-title h2 {
+  text-align: center;
+}

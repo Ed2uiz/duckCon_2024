@@ -1,0 +1,348 @@
+---
+title: "**dbverse**: <br> composable database libraries for larger-than-memory scientific analytics"
+css: style.css
+format: 
+    clean-revealjs:
+      footer: "Link to slides: https://rpubs.com/Ed2uiz/dbverse-duckCon2024"
+author: 
+    name: Edward C. Ruiz
+    email: ecruiz@bu.edu
+    affiliations: Ph.D. Candidate, Dries Lab, Boston University
+date: August 15, 2024
+revealjs-plugins:
+  - pointer
+---
+
+```{r}
+# Path to where pres files are:
+setwd('/Users/user/Documents/duckCon_2024')
+```
+
+## Motivation
+
+### Current challenges with scientific data analysis
+::: incremental
+- Scientific data is often messy and complex.
+    - Not your standard dataframe
+    - Heterogeneous, multi-modal (e.g. "multi-omics")
+    - Larger-than-memory (e.g. spatial multi-omics)
+- A variety of tools and languages are used to analyze scientific data.
+    - Interoperability is often limited
+    - Fragmentation by data type
+- **How can we develop better approaches for scientific data analysis?**
+    
+:::
+
+::: {.notes}
+- This project is motivated by several challenges and bottlenecks that I've faced 
+when analyzing scientific data as part of my PhD research.
+- Scientific data can be challenging to work with because it has unique file 
+formats and data types, is heterogeneous and multi-modal, and is often 
+larger-than-memory. 
+- Another major challenge is that various tools are often required to process and 
+analyze scientific data. These tools often lack interoperability and may be 
+incompatible with all of the data a scientist needs to analyze for an 
+experiment.
+- In an effort to tackle these challenges and address this guiding question, I 
+developed dbverse
+:::
+
+## *dbverse* overview
+![](images/dbverse-overview.png){width="100%%" height="100%%" fig-align="center"}
+
+::: {.notes}
+*dbverse* consists of composable database libraries that are built on DuckDB and the 
+R programming language. Dedicated libraries provide methods for analyzing sparse 
+and dense matrices, spatial geometries, and genomic sequence files in a DuckDB 
+database. These libraries are designed to scale to larger-than-memory scientific data. 
+And they’re also compatible with a wide array of scientific data sources including 
+domain-specific file formats as well as in-memory objects from common R packages like 
+Matrix, sf, and terra
+:::
+
+## `{dbverse}` adopts familiar syntax
+
+### Example with `{dbMatrix}`
+::: {.fragment .fade-in-then-semi-out}
+::: columns
+::: {.column width="50%"}
+#### Matrix
+```{r}
+#| echo: false
+library(Matrix)
+dgc = readRDS("./cbm_files/dgc.rds")
+```
+
+```{r}
+#| echo: true
+rownames(dgc)[1:5]
+colnames(dgc)[1:5]
+dim(dgc)
+```
+
+:::
+
+::: {.column width="50%"}
+#### dbMatrix
+```{r}
+#| echo: false
+con = DBI::dbConnect(duckdb::duckdb(), "foo.db")
+invisible(ldbm())
+dbMatrix = dbMatrix::dbMatrix(value = dgc,
+                              name = "foo",
+                              class = "dbSparseMatrix",
+                              con =  con,
+                              overwrite = TRUE)
+```
+
+
+```{r}
+#| echo: true
+rownames(dbMatrix)[1:5]
+colnames(dbMatrix)[1:5]
+dim(dgc)
+```
+:::
+:::
+:::
+
+::: {.notes}
+Unlike other object relational mapping frameworks, dbverse adopts intuitive syntax 
+which emulates existing packages. This make it easy to use dbverse libraries right out 
+of the box without knowing SQL. For example, shown here are three methods for 
+computing subsetted rownames, colnames, and dimensions that are identical 
+between an in-memory matrix shown on the left and a database representation of a 
+matrix shown on the right via dbMatrix.
+:::
+
+## How does it work? *dbMatrix* example
+
+*dbMatrix* adopts familiar `{Matrix}` syntax...
+```{r, eval = FALSE}
+#| echo: true
+scaled <- dbMatrix[,"cell_1"] * 10
+```
+
+::: {.fragment .fade-in-then-semi-out}
+with underlying methods implemented with `{dplyr}` ...
+```{r, eval = FALSE}
+#| echo: true
+scaled <- dplyr::tbl(con, "dbMatrix") |>
+  dplyr::select(cell_id = "cell_1") |>
+  dplyr::mutate(scaled = expression * 10)
+```
+:::
+
+::: {.fragment .fade-in-then-semi-out}
+which are transpiled to SQL via `{dbplyr}`...
+```{sql, eval = FALSE}
+#| echo: true
+SELECT cell_id, expression * 10 AS scaled
+FROM my_cells.db WEHRE cell_id = 'cell_1';
+```
+:::
+
+::: {.fragment .fade-in-then-semi-out}
+and lazy evaluated in a DuckDB database 🐥🚀!
+:::
+
+::: {.notes}
+To achieve this, we implemented generics from existing scientific 
+packages as SQL queries that can be run in DuckDB. dbverse methods adopt familiar syntax from existing packages, with underlying implementations written in the {dplyr} package
+
+which are transpiled to duckdb-compatible SQL via {dbplyr}
+
+ and lazy evaluated in a DuckDB database for fast and scalable queries.
+:::
+
+## Illustrative `{dbMatrix}` benchmark
+### `{dbMatrix}` performs larger-than-memory sparse matrix operations and outperforms HDF5Matrix
+```{r, eval = FALSE}
+#| echo: true
+norm_mat <- t(t(dbMatrix) / libsizes) * scalefactor
+lib_norm_mat <- log(norm_mat + offset) / log(base)
+log_norm_mat <- t(norm_mat) - colMeans(lib_norm_mat)
+# ...additional matrix operations
+```
+::: {.fragment .fade-in }
+![](images/dbMatrix-bench.png)
+:::
+
+::: {.notes}
+ To illustrate the performance benefits of dbverse libraries, I’d like to showcase a few 
+benchmarks from each package starting with dbMatrix.
+In this benchmark, we performed several matrix operations, including matrix 
+transposes and sparse to dense matrix densification, on a large sparse matrix with 
+30k rows and 1 million columns. 
+We observed that dbMatrix outperforms a competing approach from the 
+HDF5Matrix R package by up to an order of magnitude and is able to perform matrix 
+operations that are impossible with in-memory sparse matrices due to memory 
+limitations.
+:::
+
+## Illustrative `{dbSpatial}` benchmark
+
+### `{dbSptaial}` outperforms existing in-memory methods for spatial intersections
+
+*Task*: find the intersection between cell polygons in tissue region of interests (ROIs)
+
+::: {.fragment .fade-in }
+```{r}
+#| echo: false
+
+knitr::kable(data.frame(
+  ROI = c("ROI 1", "ROI 2", "ROI 3"),
+  No_Polygons = c(1564, 92498, 143245),
+  dbSpatial = c(0.05, 1.56, 2.55),
+  sf_memory = c(0.48, 39.024, 65.398),
+  Delta_Performance = c("9X", "25X", "25X")
+), 
+caption = "Median Runtime (seconds; 5X queries)",
+col.names = c("", "No. Polygons", "dbSpatial", "sf (memory)", "Δ Performance")) |>
+  kableExtra::column_spec(5, color = "blue")
+
+
+
+```
+
+:::
+
+::: {.notes}
+To illustrate the performance of the dbSpatial library we performed spatial intersections between increasing numbers of  polygons representing cells in a tissue region of interest.
+We’ve observed that dbSpatial outperforms a competing in-memory from the {sf} 
+package by up to 25X.
+:::
+
+## Illustrative `{dbSequence}` benchmark
+
+### `{dbSequence}` outperforms competing methods
+
+*Task*: filter reads in a genomic `*.bam` file (28GB, 285e6 reads)
+
+- `samtools` v1.20 (Li *et al.* 2009)
+- q01: chromosome region
+- q02: q01 + flag
+- q03: q02 + CIGAR string (`samtools` + `awk`)
+<br>
+
+::: {.fragment .fade-in }
+
+```{r}
+#| echo: false
+knitr::kable(data.frame(
+  Query = c("q01", "q02", "q03"),
+  dbSequence = c(0.034, 0.00622, 19.26),
+  samtools = c(0.08, 0.02, "DNC"),
+  Delta_Speed = c("2X", "3X", "∞")
+), 
+caption = "Median Runtime (seconds; 5X queries)",
+col.names = c("Query", "dbSequence", "samtools", "Δ Speed")) |>
+  kableExtra::column_spec(4, color = "blue")
+```
+
+:::
+
+::: {.notes}
+Finally, to illustrate the performance of {dbSequence} we benchmarked the runtime 
+performance of filtering a 28GB bam file versus Samtools, an established library for 
+processing genomic files.
+- Query 1 represents filtering by chromosom region
+- Query 2 represents query 1 plus filtering by a flag
+- Query 3 represents query 2 plus filtering by a CIGAR string
+Here we illustrate that dbSequence outperforms samtools at specific queries and 
+enables queries that are impossible to run with Samtools on a large bam file due to 
+memory limitations.
+:::
+
+## Conclusions
+
+### Advantages of using DuckDB for scientific data analysis
+::: incremental
+- **Runs on modern laptops**: All previous benchmarks were performed on a Macbook Pro M2, 16GB RAM, 512GB SSD
+- **Open Source**: MIT license
+- **Platform-independent**: Runs on all major OS
+- **Portable**: Share results in a single `*.db` file
+- **Affordable**: Free to use, pay for more local storage as needed or 'hybrid execution' with *MotherDuck*
+- **First release**: `08/15/2024` (today 🎉)
+:::
+
+::: {.notes}
+In summary, DuckDB has several advantages for scientific data analysis. 
+- It runs on modern laptops, all benchmarks were performed on my Macbook 
+with the following specs
+- And it’s open source, platform independent, portable, and affordable
+
+I’m excited to also share that we’ve open sourced the dbSpatial and dbMatrix libraries 
+today, with the dbSequence library coming soon.
+:::
+
+## Limitations and future directions
+::: incremental
+- `dbverse` is currently only compatible with R
+  - Plan to support other languages (e.g. Python)
+- Limited visualization/plotting functionality
+  - `uwdata/mosaic` integration, see discussion #354
+- Limited support for large images
+  - DuckDB Spatial Extension Raster support
+- Plans to adopt `duckplyr`
+  - See `duckdblabs/duckplyr` issue #86
+- ... and much more!
+:::
+
+::: {.notes}
+- dbverse is currently only compatible with R, but we plan to support other 
+languages in the future and are open to collaborations
+-  We're also excited to explore how we could visualize larger-than-memory scintific data with uwdata's mosaic  library
+- Analyzing large images remains a major challenge in the scientific field, we 
+plan to provide support for rasters through recent support from the DuckDB 
+spatial extension.
+- In the near future, we hope to adopt duckplyr to streamline our objects and 
+possibly even speed up our queries even further
+:::
+
+## Acknowledgements
+
+::: columns
+::: {.column width="40%"}
+#### Ruben Dries Lab
+- **Jiaji George Chen**️  
+- Iqra Amin
+- Wonyl Choi
+- Junxiang Xu
+- Yibing Michelle Wei
+- Jeffrey Sheridan
+- Quynh Sun
+- Veronica Jarzabek
+:::
+
+::: {.column width="60%"}
+#### Funding
+![](images/funding.png){.absolute top=130 left=420 width="700" height="400"}
+:::
+:::
+
+## 
+<h2 style="text-align: center;">Questions?</h2>
+
+::: {.v-center-container}
+<br>
+![](images/duck.gif){.absolute top=450 left=460 width="14%" height="23%"}
+<br>
+*To learn more please visit:*
+<br>
+[https://drieslab.github.io/dbverse/](https://drieslab.github.io/dbverse/)
+<br>
+<br>
+🐦👨🏽‍💻@Ed2uiz    |    ✉️ ecruiz@bu.edu
+<br>
+:::
+
+```{css}
+.v-center-container {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 50%;
+        }
+```
+
